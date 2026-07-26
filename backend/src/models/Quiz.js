@@ -29,6 +29,16 @@ const quizSchema = new mongoose.Schema(
     questions: [questionSchema],
     passScore: { type: Number, default: 70 },
     timeLimitMinutes: { type: Number, default: 30 },
+    /** Total marks for this quiz (e.g. 10) */
+    totalMarks: { type: Number, default: 10, min: 1 },
+    /** auto = MCQ score; ai = AI awards marks; manual = instructor grades */
+    gradingMode: {
+      type: String,
+      enum: ["auto", "ai", "manual"],
+      default: "auto",
+    },
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, default: null },
     status: {
       type: String,
       enum: ["draft", "published"],
@@ -37,7 +47,7 @@ const quizSchema = new mongoose.Schema(
     sourceFile: String,
     sourceType: {
       type: String,
-      enum: ["manual", "pdf_ai", "student_pdf"],
+      enum: ["manual", "pdf_ai", "student_pdf", "text_ai"],
       default: "manual",
     },
   },

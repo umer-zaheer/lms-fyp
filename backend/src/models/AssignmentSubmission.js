@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 
-const quizAttemptSchema = new mongoose.Schema(
+const assignmentSubmissionSchema = new mongoose.Schema(
   {
-    quiz: {
+    assignment: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Quiz",
+      ref: "Assignment",
       required: true,
     },
     student: {
@@ -12,32 +12,28 @@ const quizAttemptSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    answers: [
-      {
-        questionId: String,
-        selectedIndex: Number,
-        textAnswer: String,
-      },
-    ],
-    /** Percentage 0–100 (legacy / display) */
-    score: { type: Number, default: 0 },
+    textAnswer: { type: String, default: "" },
     marksAwarded: { type: Number, default: 0 },
     maxMarks: { type: Number, default: 10 },
-    passed: { type: Boolean, default: false },
     status: {
       type: String,
       enum: ["submitted", "graded", "pending"],
-      default: "graded",
+      default: "pending",
     },
     feedback: { type: String, default: "" },
     gradedBy: {
       type: String,
-      enum: ["auto", "ai", "instructor", ""],
+      enum: ["ai", "instructor", ""],
       default: "",
     },
-    completedAt: Date,
+    submittedAt: { type: Date, default: Date.now },
   },
   { timestamps: true }
 );
 
-export default mongoose.model("QuizAttempt", quizAttemptSchema);
+assignmentSubmissionSchema.index(
+  { assignment: 1, student: 1 },
+  { unique: true }
+);
+
+export default mongoose.model("AssignmentSubmission", assignmentSubmissionSchema);

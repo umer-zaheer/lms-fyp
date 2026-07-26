@@ -436,7 +436,7 @@ export const deleteLessonDocument = asyncHandler(async (req, res) => {
 /** Student (or owner) asks a question about a lesson document */
 export const chatLessonDocument = asyncHandler(async (req, res) => {
   const Enrollment = (await import("../models/Enrollment.js")).default;
-  const { chatCompletion } = await import("../utils/openrouter.js");
+  const { answerFromDocument } = await import("../utils/openrouter.js");
 
   const course = await loadCourseOrThrow(req.params.id);
   const isOwner =
@@ -494,21 +494,10 @@ export const chatLessonDocument = asyncHandler(async (req, res) => {
     );
   }
 
-  const clipped = context.slice(0, 28000);
-  const answer = await chatCompletion({
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are a helpful tutor for an LMS. Answer ONLY using the provided document excerpt. If the answer is not in the document, say you cannot find it in this document. Be concise and clear.",
-      },
-      {
-        role: "user",
-        content: `Document title: ${doc.title || "Lesson document"}\n\n--- DOCUMENT ---\n${clipped}\n--- END ---\n\nStudent question: ${question}`,
-      },
-    ],
-    temperature: 0.2,
-    max_tokens: 800,
+  const answer = await answerFromDocument({
+    documentTitle: doc.title || "Lesson document",
+    documentText: context,
+    question,
   });
 
   res.json({

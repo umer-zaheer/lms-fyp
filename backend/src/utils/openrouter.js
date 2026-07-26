@@ -130,3 +130,136 @@ export async function generateQuizFromText(text, { count = 5, title = "AI Quiz" 
   }
   return parsed.questions.slice(0, n);
 }
+
+const DOC_CHAT_CHARS = Number(process.env.OPENROUTER_DOC_CHAT_CHARS) || 8000;
+const DOC_CHAT_MAX_TOKENS = Number(process.env.OPENROUTER_DOC_CHAT_MAX_TOKENS) || 320;
+
+/**
+ * Minimal-token Q&A over a document, with few-shot format (headings + bullets).
+ */
+export async function answerFromDocument({
+  documentTitle = "Lesson document",
+  documentText = "",
+  question = "",
+} = {}) {
+  const excerpt = String(documentText || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, DOC_CHAT_CHARS);
+
+  const q = String(question || "").trim().slice(0, 500);
+
+  const system = `You are a concise LMS tutor. Answer ONLY from the document.
+Rules:
+- Use minimal words; no fluff or repetition.
+- Structure with short Markdown headings (##) when the answer has sections.
+- Use bullet lists (- ) for steps, items, or multiple points.
+- If the answer is a single short fact, reply in 1–3 sentences (no forced headings).
+- If not in the document, reply exactly: "Not found in this document."
+- Do not invent facts.`;
+
+  // Few-shot examples for consistent formatting
+  const messages = [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content:
+        'Document: "Intro to HTTP"\nText: HTTP methods include GET to read data and POST to create resources. Status 404 means not found.\n\nQ: What are the main HTTP methods mentioned?',
+    },
+    {
+      role: "assistant",
+      content: `## Main HTTP methods
+- **GET** — read data
+- **POST** — create resources
+
+## Related
+- **404** — resource not found`,
+    },
+    {
+      role: "user",
+      content:
+        'Document: "Course syllabus"\nText: Week 1 covers setup. Week 2 covers React basics.\n\nQ: When is the final exam?',
+    },
+    {
+      role: "assistant",
+      content: "Not found in this document.",
+    },
+    {
+      role: "user",
+      content:
+        'Document: "Sorting notes"\nText: Bubble sort repeatedly swaps adjacent items if they are in the wrong order.\n\nQ: What is bubble sort?',
+    },
+    {
+      role: "assistant",
+      content:
+        "Bubble sort repeatedly swaps adjacent items that are out of order until the list is sorted.",
+    },
+    {
+      role: "user",
+      content: `Document: "${documentTitle}"\nText: ${excerpt}\n\nQ: ${q}`,
+    },
+  ];
+
+  return chatCompletion({
+    messages,
+    temperature: 0.15,
+    max_tokens: Math.min(DOC_CHAT_MAX_TOKENS, 400),
+  });
+}
+
+/**
+ * AI grades an open answer out of maxMarks. Returns { marks, feedback }.
+ */
+export async function gradeWithAi({
+  title = "Assessment",
+  instructions = "",
+  contextText = "",
+  studentAnswer = "",
+  maxMarks = 10,
+} = {}) {
+  const max = Math.max(1, Math.min(Number(maxMarks) || 10, 100));
+  const excerpt = String(contextText || instructions || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 6000);
+  const answer = String(studentAnswer || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 4000);
+
+  const raw = await chatCompletion({
+    messages: [
+      {
+        role: "system",
+        content: `You are a strict but fair grader. Return ONLY compact JSON: {"marks":number,"feedback":"short reason"}. marks must be 0..${max}. No markdown.`,
+      },
+      {
+        role: "user",
+        content: `Title: ${title}\nMax marks: ${max}\nRubric/context: ${excerpt || "Grade quality and completeness."}\n\nStudent answer:\n${answer || "(empty)"}`,
+      },
+    ],
+    temperature: 0.1,
+    max_tokens: 180,
+  });
+
+  const cleaned = String(raw || "")
+    .replace(/```json\n?|\n?```/g, "")
+    .trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) {
+      return { marks: 0, feedback: "AI grading failed to parse response" };
+    }
+    parsed = JSON.parse(match[0]);
+  }
+  let marks = Number(parsed.marks);
+  if (!Number.isFinite(marks)) marks = 0;
+  marks = Math.max(0, Math.min(max, Math.round(marks * 100) / 100));
+  return {
+    marks,
+    feedback: String(parsed.feedback || "").slice(0, 500),
+  };
+}
