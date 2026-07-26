@@ -89,6 +89,426 @@ export const adminStats = asyncHandler(async (_req, res) => {
   });
 });
 
+/** Platform-wide analytics for admin dashboard charts */
+export const adminAnalytics = asyncHandler(async (_req, res) => {
+  const months = lastNMonths(12);
+  const first = months[0];
+  const rangeStart = new Date(first.year, first.month - 1, 1);
+
+  const pctChange = (cur, prev) => {
+    if (!prev && !cur) return "0%";
+    if (!prev) return "+100%";
+    const diff = Math.round(((cur - prev) / prev) * 100);
+    return `${diff >= 0 ? "+" : ""}${diff}%`;
+  };
+
+  const [
+    revenueAgg,
+    enrollmentAgg,
+    enrollProgress,
+    publishedCourses,
+    totalStudents,
+    totalInstructors,
+    totalEnrollments,
+    totalRevenueAll,
+  ] = await Promise.all([
+    Payment.aggregate([
+      {
+        $match: {
+          status: "paid",
+          $or: [
+            { purchasedAt: { $gte: rangeStart } },
+            { createdAt: { $gte: rangeStart } },
+          ],
+        },
+      },
+      {
+        $addFields: {
+          _year: {
+            $ifNull: [
+              "$year",
+              { $year: { $ifNull: ["$purchasedAt", "$createdAt"] } },
+            ],
+          },
+          _month: {
+            $ifNull: [
+              "$month",
+              { $month: { $ifNull: ["$purchasedAt", "$createdAt"] } },
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: { year: "$_year", month: "$_month" },
+          total: { $sum: "$amountTotal" },
+          platform: { $sum: "$platformFee" },
+          sales: { $sum: 1 },
+        },
+      },
+    ]),
+    Enrollment.aggregate([
+      {
+        $match: {
+          $or: [
+            { enrolledAt: { $gte: rangeStart } },
+            { createdAt: { $gte: rangeStart } },
+          ],
+        },
+      },
+      {
+        $addFields: {
+          _year: {
+            $ifNull: [
+              "$year",
+              { $year: { $ifNull: ["$enrolledAt", "$createdAt"] } },
+            ],
+          },
+          _month: {
+            $ifNull: [
+              "$month",
+              { $month: { $ifNull: ["$enrolledAt", "$createdAt"] } },
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: { year: "$_year", month: "$_month" },
+          enrollments: { $sum: 1 },
+        },
+      },
+    ]),
+    Enrollment.aggregate([
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          completed: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $gte: ["$progress", 100] },
+                    { $ne: ["$completedAt", null] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          avgProgress: { $avg: "$progress" },
+        },
+      },
+    ]),
+    Course.countDocuments({ status: "published" }),
+    User.countDocuments({ role: "student" }),
+    User.countDocuments({ role: "instructor" }),
+    Enrollment.countDocuments(),
+    Payment.aggregate([
+      { $match: { status: "paid" } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amountTotal" },
+          platform: { $sum: "$platformFee" },
+        },
+      },
+    ]),
+  ]);
+
+  const revMap = new Map(
+    revenueAgg.map((r) => [`${r._id.year}-${r._id.month}`, r]),
+  );
+  const enrollMap = new Map(
+    enrollmentAgg.map((r) => [`${r._id.year}-${r._id.month}`, r]),
+  );
+
+  const revenueTrend = months.map((m) => {
+    const key = `${m.year}-${m.month}`;
+    const rev = revMap.get(key);
+    const en = enrollMap.get(key);
+    return {
+      month: m.shortLabel,
+      label: m.label,
+      year: m.year,
+      monthNum: m.month,
+      total: Math.round((rev?.total || 0) * 100) / 100,
+      platform: Math.round((rev?.platform || 0) * 100) / 100,
+      sales: rev?.sales || 0,
+      enrollments: en?.enrollments || 0,
+    };
+  });
+
+  // Last 7 days activity (enrollments / progress updates)
+  const weekStart = new Date();
+  weekStart.setHours(0, 0, 0, 0);
+  weekStart.setDate(weekStart.getDate() - 6);
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const weeklyBuckets = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return {
+      key: d.toISOString().slice(0, 10),
+      day: dayNames[d.getDay()],
+      users: 0,
+      completions: 0,
+    };
+  });
+  const weekMap = new Map(weeklyBuckets.map((b) => [b.key, b]));
+
+  const weekEnrollments = await Enrollment.find({
+    $or: [
+      { updatedAt: { $gte: weekStart } },
+      { enrolledAt: { $gte: weekStart } },
+      { completedAt: { $gte: weekStart } },
+    ],
+  })
+    .select("progress completedAt enrolledAt updatedAt createdAt student")
+    .lean();
+
+  const activeStudentIds = new Set();
+  for (const e of weekEnrollments) {
+    const viewWhen = e.updatedAt || e.enrolledAt || e.createdAt;
+    if (viewWhen && viewWhen >= weekStart) {
+      const key = new Date(viewWhen).toISOString().slice(0, 10);
+      const bucket = weekMap.get(key);
+      if (bucket) bucket.users += 1;
+      if (e.student) activeStudentIds.add(String(e.student));
+    }
+    if (e.completedAt && e.completedAt >= weekStart) {
+      const key = new Date(e.completedAt).toISOString().slice(0, 10);
+      const bucket = weekMap.get(key);
+      if (bucket) bucket.completions += 1;
+    } else if ((e.progress || 0) >= 100 && viewWhen && viewWhen >= weekStart) {
+      const key = new Date(viewWhen).toISOString().slice(0, 10);
+      const bucket = weekMap.get(key);
+      if (bucket) bucket.completions += 1;
+    }
+  }
+
+  const weeklyActivity = weeklyBuckets.map(({ day, users, completions }) => ({
+    day,
+    users,
+    completions,
+  }));
+
+  // Users by role (replaces traffic pie with real acquisition mix)
+  const [roleCounts, categoryCompletion] = await Promise.all([
+    User.aggregate([
+      { $group: { _id: "$role", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]),
+    Enrollment.aggregate([
+      {
+        $lookup: {
+          from: "courses",
+          localField: "course",
+          foreignField: "_id",
+          as: "courseDoc",
+        },
+      },
+      { $unwind: "$courseDoc" },
+      {
+        $lookup: {
+          from: "categories",
+          localField: "courseDoc.category",
+          foreignField: "_id",
+          as: "categoryDoc",
+        },
+      },
+      {
+        $unwind: {
+          path: "$categoryDoc",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      {
+        $group: {
+          _id: { $ifNull: ["$categoryDoc.name", "Uncategorized"] },
+          total: { $sum: 1 },
+          completed: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $gte: ["$progress", 100] },
+                    { $ne: ["$completedAt", null] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      { $sort: { total: -1 } },
+      { $limit: 8 },
+    ]),
+  ]);
+
+  const usersByRole = roleCounts.map((r) => ({
+    role: r._id || "unknown",
+    count: r.count,
+  }));
+
+  const completionByCategory = categoryCompletion.map((r) => ({
+    category: r._id,
+    rate:
+      r.total > 0 ? Math.round((r.completed / r.total) * 100) : 0,
+    enrollments: r.total,
+  }));
+
+  const progressRow = enrollProgress[0];
+  const completionRate =
+    progressRow && progressRow.total > 0
+      ? Math.round((progressRow.completed / progressRow.total) * 100)
+      : Math.round(progressRow?.avgProgress || 0);
+
+  // KPI trends vs previous 30 days
+  const prevStart = new Date();
+  prevStart.setDate(prevStart.getDate() - 60);
+  const mid = new Date();
+  mid.setDate(mid.getDate() - 30);
+
+  const [
+    enrollRecent,
+    enrollPrev,
+    studentsRecent,
+    studentsPrev,
+    coursesRecent,
+    coursesPrev,
+    completedRecent,
+    completedPrev,
+  ] = await Promise.all([
+    Enrollment.countDocuments({
+      $or: [{ enrolledAt: { $gte: mid } }, { createdAt: { $gte: mid } }],
+    }),
+    Enrollment.countDocuments({
+      $or: [
+        { enrolledAt: { $gte: prevStart, $lt: mid } },
+        { createdAt: { $gte: prevStart, $lt: mid } },
+      ],
+    }),
+    User.countDocuments({ role: "student", createdAt: { $gte: mid } }),
+    User.countDocuments({
+      role: "student",
+      createdAt: { $gte: prevStart, $lt: mid },
+    }),
+    Course.countDocuments({
+      status: "published",
+      createdAt: { $gte: mid },
+    }),
+    Course.countDocuments({
+      status: "published",
+      createdAt: { $gte: prevStart, $lt: mid },
+    }),
+    Enrollment.countDocuments({
+      $or: [
+        { completedAt: { $gte: mid } },
+        { progress: { $gte: 100 }, updatedAt: { $gte: mid } },
+      ],
+    }),
+    Enrollment.countDocuments({
+      $or: [
+        { completedAt: { $gte: prevStart, $lt: mid } },
+        {
+          progress: { $gte: 100 },
+          updatedAt: { $gte: prevStart, $lt: mid },
+        },
+      ],
+    }),
+  ]);
+
+  const completionRecentRate =
+    enrollRecent > 0
+      ? Math.round((completedRecent / enrollRecent) * 100)
+      : 0;
+  const completionPrevRate =
+    enrollPrev > 0
+      ? Math.round((completedPrev / enrollPrev) * 100)
+      : 0;
+
+  const weeklyActive = activeStudentIds.size;
+
+  const peakDay = [...weeklyActivity].sort(
+    (a, b) => b.users - a.users || b.completions - a.completions,
+  )[0];
+  const bestCategory = [...completionByCategory].sort(
+    (a, b) => b.rate - a.rate || b.enrollments - a.enrollments,
+  )[0];
+  const weakCategory = [...completionByCategory]
+    .filter((c) => c.enrollments > 0)
+    .sort((a, b) => a.rate - b.rate || b.enrollments - a.enrollments)[0];
+
+  const insights = [];
+  if (peakDay && peakDay.users > 0) {
+    insights.push({
+      title: `${peakDay.day} peak`,
+      body: `Learner activity peaks on ${peakDay.day}s (${peakDay.users} sessions this week). Schedule live classes then for higher attendance.`,
+    });
+  }
+  if (bestCategory) {
+    insights.push({
+      title: "Top category",
+      body: `${bestCategory.category} leads completion at ${bestCategory.rate}% across ${bestCategory.enrollments} enrollments.`,
+    });
+  }
+  if (weakCategory && weakCategory.category !== bestCategory?.category) {
+    insights.push({
+      title: "Completion gap",
+      body: `${weakCategory.category} lags at ${weakCategory.rate}%. Add checkpoints or shorter modules to lift finishes.`,
+    });
+  }
+  if (insights.length === 0) {
+    insights.push({
+      title: "Getting started",
+      body: "As enrollments and payments grow, revenue, activity, and completion insights will appear here.",
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      kpis: {
+        students: {
+          value: totalStudents,
+          trend: pctChange(studentsRecent, studentsPrev),
+        },
+        completionRate: {
+          value: completionRate,
+          trend: pctChange(completionRecentRate, completionPrevRate),
+        },
+        weeklyActive: {
+          value: weeklyActive,
+          trend: pctChange(enrollRecent, enrollPrev),
+        },
+        publishedCourses: {
+          value: publishedCourses,
+          trend: pctChange(coursesRecent, coursesPrev),
+        },
+        instructors: { value: totalInstructors, trend: "—" },
+        totalEnrollments: { value: totalEnrollments, trend: "—" },
+        totalRevenue: {
+          value: Math.round((totalRevenueAll[0]?.total || 0) * 100) / 100,
+          trend: "—",
+        },
+        platformRevenue: {
+          value: Math.round((totalRevenueAll[0]?.platform || 0) * 100) / 100,
+          trend: "—",
+        },
+      },
+      revenueTrend,
+      weeklyActivity,
+      usersByRole,
+      completionByCategory,
+      insights,
+    },
+  });
+});
+
 export const myCertificates = asyncHandler(async (req, res) => {
   const data = await Certificate.find({ student: req.user._id })
     .populate("course", "title thumbnail")
@@ -972,4 +1392,36 @@ export const instructorRecentSales = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data });
+});
+
+/**
+ * Delete all documents in every collection. Collections (tables) are kept.
+ * Body: { confirm: "DELETE_ALL_DOCUMENTS" }
+ */
+export const cleanDatabase = asyncHandler(async (req, res) => {
+  if (req.body?.confirm !== "DELETE_ALL_DOCUMENTS") {
+    throwHttp(
+      res,
+      400,
+      'Send { "confirm": "DELETE_ALL_DOCUMENTS" } to wipe all documents'
+    );
+  }
+
+  const db = mongoose.connection.db;
+  if (!db) throwHttp(res, 500, "Database not connected");
+
+  const collections = await db.listCollections().toArray();
+  const cleared = [];
+
+  for (const { name } of collections) {
+    if (name.startsWith("system.")) continue;
+    const result = await db.collection(name).deleteMany({});
+    cleared.push({ collection: name, deletedCount: result.deletedCount });
+  }
+
+  res.json({
+    success: true,
+    message: "All documents removed; collections preserved",
+    data: cleared,
+  });
 });

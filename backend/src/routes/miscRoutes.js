@@ -9,6 +9,8 @@ import {
   updateUser,
   listPayments,
   adminStats,
+  adminAnalytics,
+  cleanDatabase,
   myCertificates,
   instructorStudents,
   instructorEarnings,
@@ -47,6 +49,8 @@ router.get(
   listSponsorPayments
 );
 router.get("/admin/stats", protect, authorize("admin"), adminStats);
+router.get("/admin/analytics", protect, authorize("admin"), adminAnalytics);
+router.post("/admin/db/clean", protect, authorize("admin"), cleanDatabase);
 
 router.get("/instructor/students", protect, authorize("instructor"), instructorStudents);
 router.get("/instructor/earnings", protect, authorize("instructor"), instructorEarnings);
