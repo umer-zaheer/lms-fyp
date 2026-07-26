@@ -20,9 +20,41 @@ import { stripeWebhook } from "./controllers/stripeController.js";
 
 const app = express();
 
+/** Comma-separated origins in CORS_ORIGINS, or CLIENT_URL, plus common local dev */
+function corsOrigins() {
+  const fromEnv = [
+    process.env.CLIENT_URL,
+    ...(process.env.CORS_ORIGINS || "").split(","),
+  ]
+    .map((s) => (s || "").trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
+  const defaults = [
+    "http://localhost:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:8080",
+  ];
+
+  return [...new Set([...fromEnv, ...defaults])];
+}
+
+const allowedOrigins = corsOrigins();
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:8080",
+    origin(origin, callback) {
+      // Non-browser / same-origin tools may omit Origin
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Allow Vercel preview deployments for this project
+      if (/^https:\/\/[\w-]+-[\w-]+-[\w.-]+\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+      if (/^https:\/\/.*\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   })
 );

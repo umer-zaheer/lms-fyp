@@ -11,24 +11,43 @@ export const createCategory = asyncHandler(async (req, res) => {
   const { name, description } = req.body;
   if (!name) throwHttp(res, 400, "Name is required");
 
-  const slug = makeSlug(name).replace(/-[a-z0-9]{5}$/, "");
-  const exists = await Category.findOne({ slug: slugifyBase(name) });
+  const slug = slugifyBase(name);
+  if (!slug) throwHttp(res, 400, "Name is invalid");
+
+  const exists = await Category.findOne({
+    $or: [{ slug }, { name: new RegExp(`^${escapeRegex(name.trim())}$`, "i") }],
+  });
   if (exists) throwHttp(res, 400, "Category already exists");
 
   const category = await Category.create({
-    name,
-    slug: slugifyBase(name),
+    name: name.trim(),
+    slug,
     description: description || "",
   });
   res.status(201).json({ success: true, data: category });
 });
 
 export const updateCategory = asyncHandler(async (req, res) => {
-  const category = await Category.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+  const category = await Category.findById(req.params.id);
   if (!category) throwHttp(res, 404, "Category not found");
+
+  if (req.body.name != null) {
+    const name = String(req.body.name).trim();
+    if (!name) throwHttp(res, 400, "Name is required");
+    const slug = slugifyBase(name);
+    const clash = await Category.findOne({
+      _id: { $ne: category._id },
+      $or: [{ slug }, { name: new RegExp(`^${escapeRegex(name)}$`, "i") }],
+    });
+    if (clash) throwHttp(res, 400, "Category already exists");
+    category.name = name;
+    category.slug = slug;
+  }
+  if (req.body.description != null) {
+    category.description = String(req.body.description);
+  }
+
+  await category.save();
   res.json({ success: true, data: category });
 });
 
@@ -44,4 +63,8 @@ function slugifyBase(name) {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
