@@ -5,6 +5,11 @@ import Review from "../models/Review.js";
 import { makeSlug, throwHttp } from "../utils/helpers.js";
 import { buildCourseSearchText } from "../utils/pricing.js";
 import { embedText } from "../utils/openrouter.js";
+import {
+  getActiveSponsoredRows,
+  mergeSponsoredFirst,
+} from "../utils/sponsor.js";
+import { getPublishReadiness } from "../utils/curriculum.js";
 
 export const listCourses = asyncHandler(async (req, res) => {
   const {
@@ -39,8 +44,13 @@ export const listCourses = asyncHandler(async (req, res) => {
   }
   if (q) filter.$text = { $search: q };
 
+  const isPublicBrowse =
+    filter.status === "published" &&
+    !(req.user?.role === "instructor" && instructor === "me") &&
+    req.user?.role !== "admin";
+
   const skip = (Number(page) - 1) * Number(limit);
-  const [data, total] = await Promise.all([
+  const [raw, total] = await Promise.all([
     Course.find(filter)
       .populate("instructor", "name email avatar")
       .populate("category", "name slug")
@@ -49,6 +59,12 @@ export const listCourses = asyncHandler(async (req, res) => {
       .limit(Number(limit)),
     Course.countDocuments(filter),
   ]);
+
+  let data = raw;
+  if (isPublicBrowse && Number(page) === 1 && !q) {
+    const sponsored = await getActiveSponsoredRows(Number(limit));
+    data = mergeSponsoredFirst(raw, sponsored, Number(limit));
+  }
 
   res.json({
     success: true,
@@ -93,6 +109,13 @@ export const getCourse = asyncHandler(async (req, res) => {
           lesson.videoUrl = "";
           lesson.videoPublicId = "";
           lesson.content = lesson.content ? "[Enroll to unlock]" : "";
+          if (Array.isArray(lesson.videos)) {
+            lesson.videos = lesson.videos.map((v) => ({
+              ...v,
+              videoUrl: "",
+              videoPublicId: "",
+            }));
+          }
         }
       }
     }
@@ -109,6 +132,8 @@ export const getCourse = asyncHandler(async (req, res) => {
     enrolled,
     reviews,
     myReview,
+    publishReadiness:
+      isOwner || isAdmin ? getPublishReadiness(course) : undefined,
   });
 });
 
@@ -123,13 +148,13 @@ export const createCourse = asyncHandler(async (req, res) => {
     thumbnail,
     modules,
     tags,
-    status,
   } = req.body;
 
   if (!title || !category || price == null) {
     throwHttp(res, 400, "title, category, and price are required");
   }
 
+  // New courses always start as draft — publish only after curriculum + videos
   const course = await Course.create({
     title,
     slug: makeSlug(title),
@@ -142,7 +167,7 @@ export const createCourse = asyncHandler(async (req, res) => {
     thumbnail: thumbnail || {},
     modules: modules || [],
     tags: tags || [],
-    status: status === "review" ? "review" : "draft",
+    status: "draft",
     searchText: "",
   });
 
@@ -189,6 +214,20 @@ export const updateCourse = asyncHandler(async (req, res) => {
   }
 
   if (req.body.title) course.slug = makeSlug(req.body.title);
+
+  // Gate publish: modules + lessons + each lesson has ≥1 video
+  if (course.status === "published") {
+    const readiness = getPublishReadiness(course);
+    if (!readiness.canPublish) {
+      throwHttp(
+        res,
+        400,
+        readiness.issues[0] ||
+          "Add modules, lessons, and at least one video per lesson before publishing"
+      );
+    }
+  }
+
   course.searchText = buildCourseSearchText(course);
   await course.save();
 

@@ -9,6 +9,8 @@ import User from "../models/User.js";
 import { applyCouponToCourse } from "../utils/pricing.js";
 import { assertStripeConfigured, calcFeeSplit, ensurePlatformStripeReady } from "../utils/stripe.js";
 import { throwHttp } from "../utils/helpers.js";
+import { applyEnrollmentDateParts } from "../utils/recordPurchase.js";
+import { getExtraCommissionPercent } from "../utils/sponsor.js";
 
 async function ensureChannel(course) {
   let channel = await Channel.findOne({ course: course._id });
@@ -21,17 +23,45 @@ async function ensureChannel(course) {
   return channel;
 }
 
+/** Always push buyer into course.enrolledUserIds (atomic, idempotent). */
+export async function addStudentToCourse(courseId, studentId) {
+  if (!courseId || !studentId) return null;
+  return Course.findByIdAndUpdate(
+    courseId,
+    { $addToSet: { enrolledUserIds: studentId } },
+    { new: true },
+  );
+}
+
 async function createEnrollment({ studentId, course, pricePaid, couponCode, paymentId }) {
-  const enrollment = await Enrollment.create({
+  const enrollment = new Enrollment({
     student: studentId,
     course: course._id,
     pricePaid,
     couponCode,
     payment: paymentId,
   });
+  applyEnrollmentDateParts(enrollment);
+  await enrollment.save();
 
-  course.studentsCount = (course.studentsCount || 0) + 1;
-  await course.save();
+  // Atomic: add user id + bump count only when newly added
+  const before = await Course.findById(course._id).select("enrolledUserIds studentsCount");
+  const alreadyListed = (before?.enrolledUserIds || []).some(
+    (id) => String(id) === String(studentId),
+  );
+
+  await Course.findByIdAndUpdate(course._id, {
+    $addToSet: { enrolledUserIds: studentId },
+    ...(alreadyListed ? {} : { $inc: { studentsCount: 1 } }),
+  });
+
+  // Keep in-memory course doc in sync for callers
+  course.enrolledUserIds = course.enrolledUserIds || [];
+  if (!alreadyListed) {
+    course.enrolledUserIds.push(studentId);
+    course.studentsCount = (course.studentsCount || 0) + 1;
+  }
+
   await ensureChannel(course);
 
   return enrollment;
@@ -127,8 +157,10 @@ export const checkoutCourse = asyncHandler(async (req, res) => {
   }
 
   const stripe = assertStripeConfigured();
-  const feePercent =
+  const baseFee =
     settings.platformFeePercent || Number(process.env.PLATFORM_FEE_PERCENT) || 20;
+  const sponsorExtra = await getExtraCommissionPercent(course._id);
+  const feePercent = Math.min(90, Number(baseFee) + Number(sponsorExtra));
   const { platformFee, instructorAmount } = calcFeeSplit(amountCents, feePercent);
 
   // Refresh instructor Connect status from Stripe

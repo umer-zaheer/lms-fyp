@@ -2,16 +2,19 @@ import asyncHandler from "express-async-handler";
 import PlatformSettings from "../models/PlatformSettings.js";
 import User from "../models/User.js";
 import Payment from "../models/Payment.js";
+import SponsorPayment from "../models/SponsorPayment.js";
 import Course from "../models/Course.js";
 import Coupon from "../models/Coupon.js";
 import Enrollment from "../models/Enrollment.js";
-import { createEnrollment } from "./enrollmentController.js";
+import { createEnrollment, addStudentToCourse } from "./enrollmentController.js";
 import {
   assertStripeConfigured,
   ensurePlatformStripeReady,
   getStripe,
 } from "../utils/stripe.js";
 import { throwHttp } from "../utils/helpers.js";
+import { recordPaidPurchase } from "../utils/recordPurchase.js";
+import { fulfillSponsorPayment } from "../utils/sponsorCheckout.js";
 
 export const platformStatus = asyncHandler(async (_req, res) => {
   const settings = (await ensurePlatformStripeReady()) || (await PlatformSettings.getSettings());
@@ -158,6 +161,14 @@ export const instructorStripeStatus = asyncHandler(async (req, res) => {
 
 /** Finalize enrollment from a paid Checkout Session (webhook or client return) */
 export async function fulfillCheckoutSession(session) {
+  // PPC sponsor budget checkouts
+  if (session.metadata?.type === "sponsor_payment") {
+    const payment = await SponsorPayment.findById(
+      session.metadata.sponsorPaymentId
+    );
+    return fulfillSponsorPayment(payment, session);
+  }
+
   const paymentId = session.metadata?.paymentId;
   if (!paymentId) return { ok: false, reason: "missing_payment_id" };
 
@@ -169,6 +180,8 @@ export async function fulfillCheckoutSession(session) {
       student: payment.student,
       course: payment.course,
     });
+    // Ensure buyer id is on the course even for already-paid sessions
+    await addStudentToCourse(payment.course, payment.student);
     return { ok: true, alreadyPaid: true, enrollment, payment };
   }
 
@@ -201,7 +214,16 @@ export async function fulfillCheckoutSession(session) {
         couponCode: payment.couponCode,
         paymentId: payment._id,
       });
+    } else {
+      // Enrollment existed but enrolledUserIds may be missing
+      await addStudentToCourse(course._id, payment.student);
     }
+  }
+
+  try {
+    await recordPaidPurchase({ payment, enrollment });
+  } catch (err) {
+    console.error("recordPaidPurchase failed:", err.message);
   }
 
   if (payment.couponCode) {

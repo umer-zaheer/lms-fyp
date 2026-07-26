@@ -23,9 +23,22 @@ const sendAuthResponse = (res, user, statusCode = 200) => {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
+      job: user.job || "",
+      summary: user.summary || "",
+      profileComplete: Boolean(user.profileComplete),
     },
   });
 };
+
+function isInstructorProfileComplete(user) {
+  return Boolean(
+    user?.avatar?.url &&
+      user?.name?.trim() &&
+      user?.email?.trim() &&
+      user?.job?.trim() &&
+      user?.summary?.trim(),
+  );
+}
 
 // @desc    Register user
 // @route   POST /api/auth/register
@@ -54,6 +67,7 @@ export const register = asyncHandler(async (req, res) => {
     email,
     password,
     role: role === "instructor" ? "instructor" : "student",
+    profileComplete: role === "instructor" ? false : true,
   });
 
   sendAuthResponse(res, user, 201);
@@ -82,6 +96,15 @@ export const login = asyncHandler(async (req, res) => {
     throw new Error("Account is deactivated");
   }
 
+  // Keep profileComplete in sync for older instructor accounts
+  if (user.role === "instructor") {
+    const complete = isInstructorProfileComplete(user);
+    if (user.profileComplete !== complete) {
+      user.profileComplete = complete;
+      await user.save();
+    }
+  }
+
   sendAuthResponse(res, user);
 });
 
@@ -89,9 +112,113 @@ export const login = asyncHandler(async (req, res) => {
 // @route   GET /api/auth/me
 // @access  Private
 export const getMe = asyncHandler(async (req, res) => {
+  const user = req.user;
+  if (user.role === "instructor") {
+    const complete = isInstructorProfileComplete(user);
+    if (user.profileComplete !== complete) {
+      user.profileComplete = complete;
+      await user.save();
+    }
+  }
+
   res.json({
     success: true,
-    user: req.user,
+    user: {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      job: user.job || "",
+      summary: user.summary || "",
+      profileComplete:
+        user.role === "instructor"
+          ? isInstructorProfileComplete(user)
+          : true,
+    },
+  });
+});
+
+// @desc    Update current user profile (seller onboarding / settings)
+// @route   PATCH /api/auth/me
+// @access  Private
+export const updateMe = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    res.status(404);
+    throw new Error("User not found");
+  }
+
+  if (req.body.name != null) {
+    const name = String(req.body.name).trim();
+    if (!name) {
+      res.status(400);
+      throw new Error("Name is required");
+    }
+    user.name = name;
+  }
+
+  // Email is shown but not changed here (autofilled from signup)
+
+  if (req.body.job != null) {
+    user.job = String(req.body.job).trim();
+  }
+
+  if (req.body.summary != null) {
+    const summary = String(req.body.summary).trim();
+    if (summary.length > 400) {
+      res.status(400);
+      throw new Error("Summary must be 400 characters or less");
+    }
+    user.summary = summary;
+  }
+
+  if (req.body.avatar != null) {
+    const { url, publicId } = req.body.avatar;
+    if (!url) {
+      res.status(400);
+      throw new Error("Avatar image is required");
+    }
+    user.avatar = {
+      url: String(url),
+      publicId: publicId ? String(publicId) : user.avatar?.publicId,
+    };
+  }
+
+  if (user.role === "instructor") {
+    if (!user.avatar?.url) {
+      res.status(400);
+      throw new Error("Profile image is required");
+    }
+    if (!user.name?.trim()) {
+      res.status(400);
+      throw new Error("Name is required");
+    }
+    if (!user.job?.trim()) {
+      res.status(400);
+      throw new Error("Job title is required");
+    }
+    if (!user.summary?.trim()) {
+      res.status(400);
+      throw new Error("Summary is required");
+    }
+    user.profileComplete = true;
+  }
+
+  await user.save();
+
+  res.json({
+    success: true,
+    user: {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      job: user.job || "",
+      summary: user.summary || "",
+      profileComplete: Boolean(user.profileComplete),
+    },
   });
 });
 

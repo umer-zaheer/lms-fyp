@@ -14,6 +14,8 @@ import quizRoutes from "./routes/quizRoutes.js";
 import channelRoutes from "./routes/channelRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import miscRoutes from "./routes/miscRoutes.js";
+import liveSessionRoutes from "./routes/liveSessionRoutes.js";
+import sponsorRoutes from "./routes/sponsorRoutes.js";
 import { stripeWebhook } from "./controllers/stripeController.js";
 
 const app = express();
@@ -54,6 +56,8 @@ app.use("/api/stripe", stripeRoutes);
 app.use("/api/quizzes", quizRoutes);
 app.use("/api/channels", channelRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/live-sessions", liveSessionRoutes);
+app.use("/api/sponsor", sponsorRoutes);
 app.use("/api", miscRoutes);
 
 app.use(notFound);

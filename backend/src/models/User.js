@@ -30,6 +30,24 @@ const userSchema = new mongoose.Schema(
       url: String,
       publicId: String,
     },
+    /** Seller / instructor job title */
+    job: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    /** Seller detail summary */
+    summary: {
+      type: String,
+      trim: true,
+      maxlength: [400, "Summary cannot exceed 400 characters"],
+      default: "",
+    },
+    /** True once instructor completes required onboarding profile */
+    profileComplete: {
+      type: Boolean,
+      default: false,
+    },
     isActive: {
       type: Boolean,
       default: true,

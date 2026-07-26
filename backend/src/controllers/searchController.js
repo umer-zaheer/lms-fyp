@@ -1,6 +1,10 @@
 import asyncHandler from "express-async-handler";
 import Course from "../models/Course.js";
 import { embedText, cosineSimilarity } from "../utils/openrouter.js";
+import {
+  getActiveSponsoredRows,
+  mergeSponsoredFirst,
+} from "../utils/sponsor.js";
 
 /** Hybrid search: Mongo text + RAG cosine on embeddings */
 export const searchCourses = asyncHandler(async (req, res) => {
@@ -8,11 +12,13 @@ export const searchCourses = asyncHandler(async (req, res) => {
   const limit = Number(req.query.limit || req.body?.limit || 12);
 
   if (!q) {
-    const data = await Course.find({ status: "published" })
+    const raw = await Course.find({ status: "published" })
       .populate("instructor", "name avatar")
       .populate("category", "name slug")
       .sort({ studentsCount: -1 })
       .limit(limit);
+    const sponsored = await getActiveSponsoredRows(limit);
+    const data = mergeSponsoredFirst(raw, sponsored, limit);
     return res.json({ success: true, data, mode: "browse" });
   }
 
@@ -40,8 +46,14 @@ export const searchCourses = asyncHandler(async (req, res) => {
       .limit(limit);
   }
 
+  const withSponsored = async (hits, mode) => {
+    const sponsored = await getActiveSponsoredRows(Math.min(6, limit));
+    const data = mergeSponsoredFirst(hits, sponsored, limit);
+    return res.json({ success: true, data, mode });
+  };
+
   if (!process.env.OPENROUTER_API_KEY) {
-    return res.json({ success: true, data: textHits, mode: "text" });
+    return withSponsored(textHits, "text");
   }
 
   try {
@@ -80,9 +92,9 @@ export const searchCourses = asyncHandler(async (req, res) => {
       if (ranked.length >= limit) break;
     }
 
-    return res.json({ success: true, data: ranked.slice(0, limit), mode: "rag" });
+    return withSponsored(ranked.slice(0, limit), "rag");
   } catch (e) {
     console.warn("RAG fallback to text:", e.message);
-    return res.json({ success: true, data: textHits, mode: "text_fallback" });
+    return withSponsored(textHits, "text_fallback");
   }
 });

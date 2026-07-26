@@ -29,8 +29,15 @@ const paymentSchema = new mongoose.Schema(
       enum: ["pending", "paid", "failed", "refunded"],
       default: "pending",
     },
+    /** When the purchase completed (paid) */
+    purchasedAt: { type: Date },
+    year: { type: Number, index: true },
+    month: { type: Number, min: 1, max: 12, index: true },
+    day: { type: Number, min: 1, max: 31 },
   },
   { timestamps: true }
 );
+
+paymentSchema.index({ instructor: 1, year: 1, month: 1, status: 1 });
 
 export default mongoose.model("Payment", paymentSchema);

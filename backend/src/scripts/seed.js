@@ -363,9 +363,11 @@ const seed = async () => {
     }
   }
 
-  // Refresh student counts
+  // Refresh student counts + enrolled buyer ids
   for (const c of Object.values(courses)) {
-    c.studentsCount = await Enrollment.countDocuments({ course: c._id });
+    const enrollments = await Enrollment.find({ course: c._id }).select("student");
+    c.enrolledUserIds = enrollments.map((e) => e.student);
+    c.studentsCount = enrollments.length;
     await c.save();
   }
 

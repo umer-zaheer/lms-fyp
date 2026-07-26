@@ -13,12 +13,15 @@ import {
   addLesson,
   updateLesson,
   deleteLesson,
+  addLessonVideo,
+  deleteLessonVideo,
 } from "../controllers/curriculumController.js";
 import {
   listReviews,
   createReview,
   updateReview,
   deleteReview,
+  markReviewHelpful,
 } from "../controllers/reviewController.js";
 import { protect, authorize } from "../middleware/auth.js";
 
@@ -70,11 +73,28 @@ router.delete(
   authorize("instructor", "admin"),
   deleteLesson
 );
+router.post(
+  "/:id/modules/:moduleId/lessons/:lessonId/videos",
+  protect,
+  authorize("instructor", "admin"),
+  addLessonVideo
+);
+router.delete(
+  "/:id/modules/:moduleId/lessons/:lessonId/videos/:videoId",
+  protect,
+  authorize("instructor", "admin"),
+  deleteLessonVideo
+);
 
 // Reviews — anyone can list; only enrolled students can create
 router.get("/:id/reviews", listReviews);
 router.post("/:id/reviews", protect, authorize("student"), createReview);
 router.put("/:id/reviews/:reviewId", protect, updateReview);
 router.delete("/:id/reviews/:reviewId", protect, deleteReview);
+router.post(
+  "/:id/reviews/:reviewId/helpful",
+  protect,
+  markReviewHelpful,
+);
 
 export default router;

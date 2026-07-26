@@ -1,16 +1,32 @@
 import mongoose from "mongoose";
 
+const videoItemSchema = new mongoose.Schema({
+  title: { type: String, default: "", trim: true },
+  videoUrl: { type: String, required: true },
+  videoPublicId: { type: String, default: "" },
+  /** upload | youtube | url */
+  videoType: {
+    type: String,
+    enum: ["upload", "youtube", "url", ""],
+    default: "upload",
+  },
+  durationMinutes: { type: Number, default: 0 },
+  order: { type: Number, default: 0 },
+});
+
 const lessonSchema = new mongoose.Schema({
   title: { type: String, required: true },
   content: { type: String, default: "" },
+  /** Primary video (synced from videos[0] for player compatibility) */
   videoUrl: String,
   videoPublicId: String,
-  /** upload | youtube | url */
   videoType: {
     type: String,
     enum: ["upload", "youtube", "url", ""],
     default: "",
   },
+  /** Multiple videos per lesson — at least one required before publish */
+  videos: [videoItemSchema],
   durationMinutes: { type: Number, default: 0 },
   order: { type: Number, default: 0 },
   isPreview: { type: Boolean, default: false },
@@ -58,13 +74,23 @@ const courseSchema = new mongoose.Schema(
     rating: { type: Number, default: 0 },
     ratingCount: { type: Number, default: 0 },
     studentsCount: { type: Number, default: 0 },
-    // RAG: searchable text + embedding vector (OpenRouter embeddings)
+    enrolledUserIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     searchText: { type: String, default: "" },
     embedding: { type: [Number], default: undefined, select: false },
   },
   { timestamps: true }
 );
 
-courseSchema.index({ title: "text", description: "text", tags: "text", searchText: "text" });
+courseSchema.index({
+  title: "text",
+  description: "text",
+  tags: "text",
+  searchText: "text",
+});
 
 export default mongoose.model("Course", courseSchema);
