@@ -15,6 +15,9 @@ import {
   deleteLesson,
   addLessonVideo,
   deleteLessonVideo,
+  addLessonDocument,
+  deleteLessonDocument,
+  chatLessonDocument,
 } from "../controllers/curriculumController.js";
 import {
   listReviews,
@@ -24,6 +27,7 @@ import {
   markReviewHelpful,
 } from "../controllers/reviewController.js";
 import { protect, authorize } from "../middleware/auth.js";
+import upload from "../middleware/multer.js";
 
 const router = Router();
 
@@ -84,6 +88,25 @@ router.delete(
   protect,
   authorize("instructor", "admin"),
   deleteLessonVideo
+);
+
+router.post(
+  "/:id/modules/:moduleId/lessons/:lessonId/documents",
+  protect,
+  authorize("instructor", "admin"),
+  upload.single("file"),
+  addLessonDocument
+);
+router.delete(
+  "/:id/modules/:moduleId/lessons/:lessonId/documents/:docId",
+  protect,
+  authorize("instructor", "admin"),
+  deleteLessonDocument
+);
+router.post(
+  "/:id/lessons/:lessonId/documents/:docId/chat",
+  protect,
+  chatLessonDocument
 );
 
 // Reviews — anyone can list; only enrolled students can create

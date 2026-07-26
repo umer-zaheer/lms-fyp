@@ -289,3 +289,234 @@ export const deleteLessonVideo = asyncHandler(async (req, res) => {
   await refreshSearchText(course);
   res.json({ success: true, data: lesson, course });
 });
+
+function sanitizeLessonDocs(lesson) {
+  if (!lesson) return lesson;
+  const obj =
+    typeof lesson.toObject === "function" ? lesson.toObject() : { ...lesson };
+  if (Array.isArray(obj.documents)) {
+    obj.documents = obj.documents.map((d) => {
+      const { extractedText, ...rest } = d;
+      return rest;
+    });
+  }
+  return obj;
+}
+
+function sanitizeCourseDocs(course) {
+  const obj =
+    typeof course.toObject === "function" ? course.toObject() : { ...course };
+  for (const mod of obj.modules || []) {
+    for (const lesson of mod.lessons || []) {
+      if (Array.isArray(lesson.documents)) {
+        lesson.documents = lesson.documents.map((d) => {
+          const { extractedText, ...rest } = d;
+          return rest;
+        });
+      }
+    }
+  }
+  return obj;
+}
+
+/** Upload PDF/PPTX/DOCX to a lesson (+ extract text for chat) */
+export const addLessonDocument = asyncHandler(async (req, res) => {
+  const course = await loadCourseOrThrow(req.params.id);
+  assertOwner(course, req.user);
+
+  const mod = course.modules.id(req.params.moduleId);
+  if (!mod) {
+    res.status(404);
+    throw new Error("Module not found");
+  }
+  const lesson = mod.lessons.id(req.params.lessonId);
+  if (!lesson) {
+    res.status(404);
+    throw new Error("Lesson not found");
+  }
+
+  if (!req.file) {
+    res.status(400);
+    throw new Error("No file uploaded");
+  }
+
+  const { extractDocumentText, detectFileType } = await import(
+    "../utils/documentExtract.js"
+  );
+  const { uploadToCloudinary } = await import("../utils/cloudinary.js");
+
+  let extractedText = "";
+  let fileType = detectFileType(req.file.originalname, req.file.mimetype);
+  try {
+    const extracted = await extractDocumentText(req.file.buffer, {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+    });
+    extractedText = extracted.text || "";
+    fileType = extracted.fileType || fileType;
+  } catch (e) {
+    if (e.statusCode === 400) {
+      res.status(400);
+      throw e;
+    }
+    extractedText = "";
+  }
+
+  const uploaded = await uploadToCloudinary(req.file.buffer, {
+    folder: req.body.folder || "lms/lesson-docs",
+    resource_type: "auto",
+  });
+
+  if (!Array.isArray(lesson.documents)) lesson.documents = [];
+
+  const title =
+    (req.body.title || "").trim() ||
+    String(req.file.originalname || "Document")
+      .replace(/\.[^.]+$/, "")
+      .trim();
+
+  lesson.documents.push({
+    title,
+    fileUrl: uploaded.secure_url,
+    filePublicId: uploaded.public_id || "",
+    fileType,
+    mimeType: req.file.mimetype || "",
+    bytes: req.file.size || uploaded.bytes || 0,
+    extractedText,
+    hasText: extractedText.length >= 40,
+    order: lesson.documents.length,
+  });
+
+  await refreshSearchText(course);
+
+  const savedDoc = lesson.documents[lesson.documents.length - 1];
+  res.status(201).json({
+    success: true,
+    data: sanitizeLessonDocs({ documents: [savedDoc] }).documents[0],
+    lesson: sanitizeLessonDocs(lesson),
+    course: sanitizeCourseDocs(course),
+    message:
+      extractedText.length >= 40
+        ? "Document uploaded — students can chat with it"
+        : "Document uploaded — little text found; chat may be limited",
+  });
+});
+
+export const deleteLessonDocument = asyncHandler(async (req, res) => {
+  const course = await loadCourseOrThrow(req.params.id);
+  assertOwner(course, req.user);
+
+  const mod = course.modules.id(req.params.moduleId);
+  if (!mod) {
+    res.status(404);
+    throw new Error("Module not found");
+  }
+  const lesson = mod.lessons.id(req.params.lessonId);
+  if (!lesson) {
+    res.status(404);
+    throw new Error("Lesson not found");
+  }
+
+  const doc = lesson.documents?.id?.(req.params.docId);
+  if (!doc) {
+    res.status(404);
+    throw new Error("Document not found");
+  }
+
+  doc.deleteOne();
+  await refreshSearchText(course);
+  res.json({
+    success: true,
+    message: "Document deleted",
+    lesson: sanitizeLessonDocs(lesson),
+    course: sanitizeCourseDocs(course),
+  });
+});
+
+/** Student (or owner) asks a question about a lesson document */
+export const chatLessonDocument = asyncHandler(async (req, res) => {
+  const Enrollment = (await import("../models/Enrollment.js")).default;
+  const { chatCompletion } = await import("../utils/openrouter.js");
+
+  const course = await loadCourseOrThrow(req.params.id);
+  const isOwner =
+    String(course.instructor) === String(req.user._id) ||
+    req.user.role === "admin";
+
+  let enrolled = isOwner;
+  if (!enrolled) {
+    enrolled = Boolean(
+      await Enrollment.findOne({
+        student: req.user._id,
+        course: course._id,
+      }),
+    );
+  }
+  if (!enrolled) {
+    res.status(403);
+    throw new Error("Enroll in this course to chat with documents");
+  }
+
+  let lesson = null;
+  for (const mod of course.modules || []) {
+    const found = mod.lessons?.id?.(req.params.lessonId);
+    if (found) {
+      lesson = found;
+      break;
+    }
+  }
+  if (!lesson) {
+    res.status(404);
+    throw new Error("Lesson not found");
+  }
+
+  const doc = lesson.documents?.id?.(req.params.docId);
+  if (!doc) {
+    res.status(404);
+    throw new Error("Document not found");
+  }
+
+  const question = String(req.body?.question || "").trim();
+  if (!question) {
+    res.status(400);
+    throw new Error("question is required");
+  }
+  if (question.length > 2000) {
+    res.status(400);
+    throw new Error("Question is too long");
+  }
+
+  const context = String(doc.extractedText || "").trim();
+  if (context.length < 40) {
+    res.status(400);
+    throw new Error(
+      "This document has little readable text for chat. Try a text-based PDF, DOCX, or PPTX.",
+    );
+  }
+
+  const clipped = context.slice(0, 28000);
+  const answer = await chatCompletion({
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a helpful tutor for an LMS. Answer ONLY using the provided document excerpt. If the answer is not in the document, say you cannot find it in this document. Be concise and clear.",
+      },
+      {
+        role: "user",
+        content: `Document title: ${doc.title || "Lesson document"}\n\n--- DOCUMENT ---\n${clipped}\n--- END ---\n\nStudent question: ${question}`,
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 800,
+  });
+
+  res.json({
+    success: true,
+    data: {
+      answer: String(answer || "").trim(),
+      documentId: String(doc._id),
+      documentTitle: doc.title || "Document",
+    },
+  });
+});

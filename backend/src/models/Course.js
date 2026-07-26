@@ -14,6 +14,24 @@ const videoItemSchema = new mongoose.Schema({
   order: { type: Number, default: 0 },
 });
 
+/** Lesson learning materials: PDF / PPTX / DOCX */
+const documentItemSchema = new mongoose.Schema({
+  title: { type: String, default: "", trim: true },
+  fileUrl: { type: String, required: true },
+  filePublicId: { type: String, default: "" },
+  fileType: {
+    type: String,
+    enum: ["pdf", "pptx", "docx", "ppt", "doc", "file"],
+    default: "file",
+  },
+  mimeType: { type: String, default: "" },
+  bytes: { type: Number, default: 0 },
+  /** Extracted text for AI chat — stripped from API responses */
+  extractedText: { type: String, default: "" },
+  hasText: { type: Boolean, default: false },
+  order: { type: Number, default: 0 },
+});
+
 const lessonSchema = new mongoose.Schema({
   title: { type: String, required: true },
   content: { type: String, default: "" },
@@ -27,6 +45,7 @@ const lessonSchema = new mongoose.Schema({
   },
   /** Multiple videos per lesson — at least one required before publish */
   videos: [videoItemSchema],
+  documents: [documentItemSchema],
   durationMinutes: { type: Number, default: 0 },
   order: { type: Number, default: 0 },
   isPreview: { type: Boolean, default: false },

@@ -100,22 +100,33 @@ export const getCourse = asyncHandler(async (req, res) => {
     });
   }
 
-  // Hide non-preview videos from non-enrolled viewers (except owner/admin)
+  // Hide non-preview videos/docs from non-enrolled viewers (except owner/admin)
   const payload = course.toObject();
-  if (!enrolled && !isOwner && !isAdmin) {
-    for (const mod of payload.modules || []) {
-      for (const lesson of mod.lessons || []) {
-        if (!lesson.isPreview) {
-          lesson.videoUrl = "";
-          lesson.videoPublicId = "";
-          lesson.content = lesson.content ? "[Enroll to unlock]" : "";
-          if (Array.isArray(lesson.videos)) {
-            lesson.videos = lesson.videos.map((v) => ({
-              ...v,
-              videoUrl: "",
-              videoPublicId: "",
-            }));
-          }
+  for (const mod of payload.modules || []) {
+    for (const lesson of mod.lessons || []) {
+      if (Array.isArray(lesson.documents)) {
+        lesson.documents = lesson.documents.map((d) => {
+          const { extractedText, ...rest } = d;
+          return rest;
+        });
+      }
+      if (!enrolled && !isOwner && !isAdmin && !lesson.isPreview) {
+        lesson.videoUrl = "";
+        lesson.videoPublicId = "";
+        lesson.content = lesson.content ? "[Enroll to unlock]" : "";
+        if (Array.isArray(lesson.videos)) {
+          lesson.videos = lesson.videos.map((v) => ({
+            ...v,
+            videoUrl: "",
+            videoPublicId: "",
+          }));
+        }
+        if (Array.isArray(lesson.documents)) {
+          lesson.documents = lesson.documents.map((d) => ({
+            ...d,
+            fileUrl: "",
+            filePublicId: "",
+          }));
         }
       }
     }
